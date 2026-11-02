@@ -1,0 +1,6 @@
+# Development-only dependencies. Runtime deps live in requirements.txt.
+-r requirements.txt
+
+pytest>=8.0
+ruff>=0.6
+mypy>=1.10
