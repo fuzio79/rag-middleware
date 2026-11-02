@@ -1,0 +1,38 @@
+# Standalone deployment of rag-middleware.
+#
+# Copy .env.example to .env and fill it in, then: docker compose up -d
+#
+# NOTE: FIRECRAWL_API_KEY is optional. It is the fallback scraper; leave it
+# blank if you only run crawl4ai. CRAWL4AI_API_TOKEN must match the token
+# crawl4ai itself runs with, otherwise /crawl answers 401 and `engine=auto`
+# silently falls through to Firecrawl without saying so.
+services:
+  rag-service:
+    build: .
+    image: ${RAG_IMAGE:-rag-middleware:latest}
+    container_name: ${RAG_CONTAINER_NAME:-rag-service}
+    environment:
+      RAG_DB_PATH: /usr/src/app/local_knowledge_base
+      # Shared API key. Fail-closed: without it every data endpoint
+      # answers 503. Set RAG_REQUIRE_AUTH=false to opt out deliberately.
+      RAG_API_KEY: ${RAG_API_KEY:-}
+      RAG_REQUIRE_AUTH: ${RAG_REQUIRE_AUTH:-true}
+      CRAWL_URL: ${CRAWL_URL:-http://crawl4ai:11235/crawl}
+      CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+      RAG_MAX_FOLLOW_LINKS: ${RAG_MAX_FOLLOW_LINKS:-30}
+      RAG_ALLOWED_CRAWL_DOMAINS: ${RAG_ALLOWED_CRAWL_DOMAINS:-}
+    ports:
+      - "${RAG_PORT:-8000}:8000"
+    volumes:
+      - ${RAG_KB_PATH:-./data/knowledge_base}:/usr/src/app/local_knowledge_base
+      - ${RAG_HF_PATH:-./data/hf_cache}:/usr/src/app/hf_cache
+    # Match the uid/gid baked into the image (see Dockerfile APP_UID/APP_GID).
+    user: "${RAG_UID:-1000}:${RAG_GID:-1000}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3

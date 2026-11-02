@@ -1,0 +1,107 @@
+name: ci
+
+# This workflow is for the PUBLIC GitHub repository. The Gitea mirror has its
+# own .gitea/workflows/ci.yml; neither is triggered by the other.
+#
+# Deliberately contains no internal hostnames, orgs or addresses: it ships to
+# the public repo. The guard that checks for those lives in the Gitea
+# workflow, which is export-ignored and therefore never published.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # CPU-only torch must be installed from the CPU index before anything
+      # else, exactly as the Dockerfile does. Taking the default wheel pulls
+      # the whole NVIDIA stack (~2.5 GB) for a service that never uses a GPU.
+      - name: Install CPU torch
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir \
+            --index-url https://download.pytorch.org/whl/cpu \
+            torch==2.8.0
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir -r requirements-dev.txt
+
+      - name: Lint (ruff check)
+        # `ruff check --fix` is what sorts imports; `ruff format` does not.
+        # Lint the whole tree, not just rag/, or this disagrees with the
+        # Gitea run.
+        run: ruff check .
+
+      - name: Format check (ruff)
+        run: ruff format --check .
+
+      - name: Type check (mypy)
+        # Same config as the Gitea run, from pyproject.toml.
+        run: mypy
+
+      - name: Tests
+        # `python -m pytest`, not the bare `pytest` script: only the -m form
+        # puts the CWD on sys.path, which the `from rag import ...` in the
+        # tests depends on. This matches the Gitea workflow so the two
+        # cannot diverge again (they did, and GitHub failed).
+        run: python -m pytest -q
+
+      - name: Import smoke test
+        # Proves the package imports and the routes register without a model
+        # or a database. A dummy key satisfies the fail-closed config.
+        env:
+          RAG_API_KEY: ci-dummy
+        run: |
+          python - <<'PY'
+          from rag.app import create_app
+
+          app = create_app()
+          paths = set()
+          for route in app.routes:
+              path = getattr(route, "path", None)
+              if path:
+                  paths.add(path)
+              else:
+                  for sub in getattr(getattr(route, "original_router", None), "routes", []):
+                      paths.add(sub.path)
+
+          required = {"/health", "/api/v1/rag/search", "/api/v1/rag/ingest"}
+          missing = required - paths
+          assert not missing, f"missing routes: {missing}"
+          print("routes ok:", sorted(p for p in paths if p.startswith("/api") or p == "/health"))
+          PY
+
+      - name: Assert Dockerfile COPY allowlist covers the package
+        # Guards the class of bug where a runtime module exists in the repo but
+        # is never COPYed into the image, so it only fails at runtime.
+        run: |
+          for f in rag/*.py; do
+            if ! grep -q -- "$(basename "$f")" Dockerfile; then
+              echo "::error::$f is not referenced in the Dockerfile COPY allowlist"
+              exit 1
+            fi
+          done
+          echo "all rag modules present in Dockerfile"
+
+      - name: Assert plan.md is not present
+        # plan.md is an internal working document and must never reach the
+        # public tree. It is export-ignored and git-ignored; this asserts the
+        # snapshot machinery actually honoured that.
+        run: |
+          if [ -e plan.md ]; then
+            echo "::error::plan.md is an internal document and must not be published"
+            exit 1
+          fi
+          echo "no internal working documents present"

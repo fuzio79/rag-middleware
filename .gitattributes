@@ -1,0 +1,15 @@
+# Export rules for snapshot syncs.
+#
+# .gitignore has NO effect on files that are already tracked, and plan.md is
+# tracked deliberately (it should live on Gitea). These export-ignore rules are
+# what actually keep it out of the curated public snapshot, so anything built
+# with `git archive` or a filtered `git ls-files` cannot leak it by accident.
+#
+# .github/ is deliberately NOT excluded: the public repo is meant to run its
+# own GitHub Actions, so its workflows must survive the snapshot. Only Gitea's
+# CI config is stripped, because it is useless off this instance.
+plan.md          export-ignore
+*.internal.md    export-ignore
+.gitea/          export-ignore
+.gitignore       export-ignore
+.dockerignore    export-ignore
