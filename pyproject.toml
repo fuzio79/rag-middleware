@@ -1,0 +1,27 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# E/F: pycodestyle + pyflakes. I: import order. B: bugbear. UP: pyupgrade.
+select = ["E", "F", "I", "B", "UP"]
+ignore = [
+    "E501",  # line length is handled by the formatter; long strings are fine
+    "B008",  # FastAPI's Depends()/File() in defaults is the documented pattern
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.mypy]
+python_version = "3.11"
+# Only rag/ and the entrypoint shim are ours to type-check.
+files = ["rag", "main.py"]
+
+# These ship no py.typed marker, so mypy cannot see into them. Naming them
+# individually keeps the rest of the tree strict: a NEW untyped dependency
+# still fails the build instead of being silently absorbed.
+[[tool.mypy.overrides]]
+module = ["lancedb.*", "pyarrow.*", "firecrawl.*"]
+ignore_missing_imports = true

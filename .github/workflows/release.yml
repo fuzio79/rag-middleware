@@ -1,0 +1,98 @@
+name: release
+
+# Build and publish a multi-arch image to GHCR when a version tag is pushed.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Tags are pushed deliberately by the sync workflow, never automatically, so a
+# release is always a decision rather than a side effect of a merge.
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # workflow_dispatch must build the tag the caller named, not the
+          # default branch. A tag ref here also gives the build correct
+          # provenance metadata.
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Resolve image name and tag
+        id: meta
+        run: |
+          # GHCR requires a lowercase repository path; the owner may not be.
+          IMAGE="${REGISTRY}/${GITHUB_REPOSITORY,,}"
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "building ${IMAGE}:${TAG}"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # The embedding model is CPU-only and the image is pure Python, so
+          # arm64 costs nothing but build time and is useful on Apple silicon.
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.image }}:latest
+          labels: |
+            org.opencontainers.image.title=rag-middleware
+            org.opencontainers.image.description=Self-hosted RAG service for Open WebUI
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test the published image
+        # Pull what was actually pushed and confirm it starts and serves
+        # /health. Catches a broken CMD or a missing module before anyone
+        # consumes the tag.
+        run: |
+          docker run -d --name smoke \
+            -e RAG_API_KEY=smoke-test-key \
+            -p 8000:8000 \
+            "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/health; then
+              echo "healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::image did not answer /health within 30s"
+          docker logs smoke
+          exit 1
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker logs smoke || true
